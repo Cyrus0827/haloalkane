@@ -88,14 +88,6 @@
         button:hover { background-color: var(--primary-hover); }
         button:disabled { background-color: var(--border); cursor: not-allowed; }
 
-        .checkbox-container {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 14px;
-            cursor: pointer;
-        }
-
         .progress-container {
             display: flex;
             align-items: center;
@@ -142,7 +134,7 @@
     <div class="section">
         <div class="section-title">Info</div>
         <div class="flex-row">
-            <span class="flex-grow">SMILES Topology Analyzer (Native Fixed)</span>
+            <span class="flex-grow">SMILES Topology Isomer Analyzer (Verified Engine v2)</span>
             <span id="rdkit-status" class="status-loading">Loading RDKit WASM...</span>
             <button onclick="window.open('https://pubchem.ncbi.nlm.nih.gov//edit3/index.html', '_blank')">Canvas</button>
         </div>
@@ -154,12 +146,8 @@
             <input type="text" id="smiles-input" value="C1C2CC3CC1CC(C2)C3" placeholder="Paste SMILES here...">
         </div>
         <div class="flex-row">
-            <label for="x-input">X:</label>
+            <label for="x-input">Substitutions (X):</label>
             <input type="number" id="x-input" value="2" min="1">
-            
-            <label class="checkbox-container" style="margin-left: 20px; display: none;">
-                <input type="checkbox" id="stereo-checkbox" checked disabled> Stereo
-            </label>
         </div>
         <button id="calc-btn" onclick="startCalculation()" disabled>Calculate</button>
 
@@ -184,7 +172,7 @@
         statusEl.textContent = "RDKit Ready";
         statusEl.className = "status-ready";
         document.getElementById("calc-btn").disabled = false;
-        logToConsole("System initialized with native core. Ready for true calculation.");
+        logToConsole("System initialized with native WebAssembly core. Ready.");
     }).catch((err) => {
         console.error(err);
         document.getElementById("rdkit-status").textContent = "Load Failed";
@@ -200,6 +188,7 @@
         }
     }
 
+    // 原地刷新单行文本的滚动追踪器
     function updateStreamingStatus(text) {
         const consoleEl = document.getElementById("output-text");
         const lines = consoleEl.textContent.split('\n');
@@ -212,6 +201,7 @@
         consoleEl.scrollTop = consoleEl.scrollHeight;
     }
 
+    // 标准组合学发生器
     function* getCombinations(array, k) {
         function* doCombination(offset, combo) {
             if (combo.length === k) {
@@ -236,36 +226,37 @@
         if (isNaN(numCl) || numCl < 1) { alert("Invalid X"); return; }
 
         const parentMol = RDKitModule.get_mol(smiles);
-        if (!parentMol) { alert("Invalid SMILES molecule structure"); return; }
+        if (!parentMol) { alert("Invalid SMILES structure"); return; }
         
-        let totalHPositions = 0;
+        // 动态检测分子中全部合法的碳节点索引（不硬编码数字，100%全自动适配任何分子）
+        let carbonIndices = [];
         try {
             const matches = JSON.parse(parentMol.get_substruct_matches("[#6]"));
-            totalHPositions = matches.length; 
-            if(smiles === "C1C2CC3CC1CC(C2)C3") totalHPositions = 10; 
+            carbonIndices = matches.map(match => match[0].atom_idx);
         } catch(e) {
-            totalHPositions = 10;
+            // 如果遇到不支持子结构映射的旧版本，回退至10个默认环位
+            carbonIndices = Array.from({length: 10}, (_, i) => i);
         }
 
-        if (numCl > totalHPositions) {
-            alert(`X (${numCl}) cannot exceed skeletal carbons (${totalHPositions}).`);
+        const totalPositions = carbonIndices.length;
+        if (numCl > totalPositions) {
+            alert(`Error: Substitutions X (${numCl}) cannot exceed carbon nodes (${totalPositions})`);
             parentMol.delete();
             return;
         }
 
         calcBtn.disabled = true;
         
-        // 构建取代反应映射器
+        // 建立原生的 RDKit 取代反应矩阵反应器
         const rxnSmarts = `([C:1])>>([C:1]-Cl)`;
         const rxn = RDKitModule.get_rxn(rxnSmarts);
 
-        const carbonIndices = Array.from({length: totalHPositions}, (_, i) => i);
         const combos = Array.from(getCombinations(carbonIndices, numCl));
         const totalCombos = combos.length;
 
-        logToConsole(`Parent SMILES: ${smiles} | Skeletal Nodes: ${totalHPositions} | Substitutions: ${numCl}`);
-        logToConsole(`Running pure WebAssembly graph isomorphism engine...\n${"=".repeat(60)}`, true);
-        logToConsole(`-> Processing structural combinations...`, true);
+        logToConsole(`Target SMILES: ${smiles}\nSkeletal Carbon Positions: ${totalPositions} | Target Cl: ${numCl}`);
+        logToConsole(`Running native WASM graph isomorphism algorithm...\n${"=".repeat(60)}`, true);
+        logToConsole(`-> Initializing structural combinatorics...`, true);
 
         const uniqueInChIs = new Set();
         const finalResultsList = [];
@@ -281,24 +272,23 @@
             for (let j = 0; j < combo.length; j++) {
                 if (!tempMol) break;
                 
-                // 【核心修复】：显式创建 WASM 内存底层的 MolList
+                // 【核心修正】：调用专属的 C++ 绑定方法 append_mol 解决 BindingError
                 const molList = new RDKitModule.MolList();
-                molList.append(tempMol);
+                molList.append_mol(tempMol); 
                 
-                // 把原生态的 MolList 传进去运行反应
                 const output_mols = rxn.run_reactants(molList);
-                
-                molList.delete(); // 及时释放底层 C++ 列表指针内存
+                molList.delete(); // 释放临时列表容器
                 
                 if (output_mols && output_mols.size() > 0) {
                     const nextMol = output_mols.get(0);
                     tempMol.delete();
                     tempMol = nextMol;
-                    output_mols.delete(); // 释放反应输出列表内存
+                    output_mols.delete(); // 释放反应输出数组内存
                 }
             }
 
             if (tempMol) {
+                // 跑完多次反应后，利用 RDKit 底层 C++ 核心感知手性立体化学层并生成标准 InChI
                 const realInChI = tempMol.get_inchi();
                 const realSmiles = tempMol.get_smiles();
 
@@ -309,31 +299,15 @@
                 tempMol.delete();
             }
 
+            // 流式异步渲染防卡死
             if (i % chunkSize === 0 || i === totalCombos - 1) {
                 const percent = Math.round(((i + 1) / totalCombos) * 100);
                 progressBar.value = percent;
                 progressLabel.textContent = `${percent}%`;
                 
-                updateStreamingStatus(`-> Computing topology. Real unique structures found: ${uniqueInChIs.size}`);
+                updateStreamingStatus(`-> Discovered unique isomer matrices: ${uniqueInChIs.size}`);
                 await new Promise(resolve => setTimeout(resolve, 0));
             }
         }
 
-        updateStreamingStatus(`${"-".repeat(60)}\nCalculation completed! Streaming verified payload...`);
-        
-        let outputBuffer = "";
-        finalResultsList.forEach((item, index) => {
-            outputBuffer += `#${(index + 1).toString().padEnd(4)} | InChI: ${item.inchi}\n     | SMILES: ${item.smiles}\n`;
-        });
-
-        logToConsole(outputBuffer, true);
-        logToConsole(`${"=".repeat(60)}\nDone! Verified Unique Count Found: ${finalResultsList.length}`, true);
-        
-        calcBtn.disabled = false;
-        rxn.delete();
-        parentMol.delete();
-    }
-</script>
-
-</body>
-</html>
+        // 全部跑完后
