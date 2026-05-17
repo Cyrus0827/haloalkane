@@ -142,7 +142,7 @@
     <div class="section">
         <div class="section-title">Info</div>
         <div class="flex-row">
-            <span class="flex-grow">SMILES Topology Analyzer (Verified Engine)</span>
+            <span class="flex-grow">SMILES Topology Analyzer (Native Fixed)</span>
             <span id="rdkit-status" class="status-loading">Loading RDKit WASM...</span>
             <button onclick="window.open('https://pubchem.ncbi.nlm.nih.gov//edit3/index.html', '_blank')">Canvas</button>
         </div>
@@ -212,7 +212,6 @@
         consoleEl.scrollTop = consoleEl.scrollHeight;
     }
 
-    // 标准组合学函数
     function* getCombinations(array, k) {
         function* doCombination(offset, combo) {
             if (combo.length === k) {
@@ -236,30 +235,27 @@
         if (!smiles) { alert("Empty SMILES"); return; }
         if (isNaN(numCl) || numCl < 1) { alert("Invalid X"); return; }
 
-        // 验证父分子
         const parentMol = RDKitModule.get_mol(smiles);
         if (!parentMol) { alert("Invalid SMILES molecule structure"); return; }
         
-        // 动态利用智能子结构探测器获取分子中真实可取代的脂肪族/环碳槽位
         let totalHPositions = 0;
         try {
             const matches = JSON.parse(parentMol.get_substruct_matches("[#6]"));
-            // 每一个饱和碳骨架节点拥有的潜在加氢取代自由度拓扑估算
             totalHPositions = matches.length; 
-            if(smiles === "C1C2CC3CC1CC(C2)C3") totalHPositions = 10; // 扭曲烷碳节点
+            if(smiles === "C1C2CC3CC1CC(C2)C3") totalHPositions = 10; 
         } catch(e) {
             totalHPositions = 10;
         }
 
         if (numCl > totalHPositions) {
-            alert(`X (${numCl}) cannot exceed available skeletal carbons (${totalHPositions}) for this substitution matrix.`);
+            alert(`X (${numCl}) cannot exceed skeletal carbons (${totalHPositions}).`);
             parentMol.delete();
             return;
         }
 
         calcBtn.disabled = true;
         
-        // 构建取代反应网络 (利用 RDKit Web 反应矩阵将碳原子标记为氯代原子)
+        // 构建取代反应映射器
         const rxnSmarts = `([C:1])>>([C:1]-Cl)`;
         const rxn = RDKitModule.get_rxn(rxnSmarts);
 
@@ -268,7 +264,7 @@
         const totalCombos = combos.length;
 
         logToConsole(`Parent SMILES: ${smiles} | Skeletal Nodes: ${totalHPositions} | Substitutions: ${numCl}`);
-        logToConsole(`Running pure WebAssembly图同构去重算法...\n${"=".repeat(60)}`, true);
+        logToConsole(`Running pure WebAssembly graph isomorphism engine...\n${"=".repeat(60)}`, true);
         logToConsole(`-> Processing structural combinations...`, true);
 
         const uniqueInChIs = new Set();
@@ -280,25 +276,29 @@
 
         for (let i = 0; i < totalCombos; i++) {
             const combo = combos[i];
-            
-            // 针对当前组合，动态利用原生 JS 进行分子图重构
             let tempMol = RDKitModule.get_mol(smiles);
             
-            // 基于组合进行多重高阶化学置换反应
             for (let j = 0; j < combo.length; j++) {
                 if (!tempMol) break;
                 
-                // 运行原生的 WASM 反应矩阵，执行图节点的氯代取代变换
-                const output_mols = rxn.run_reactants(JSON.stringify([tempMol]));
-                if (output_mols && output_mols.length > 0) {
-                    const nextMol = RDKitModule.get_mol(output_mols[0]);
+                // 【核心修复】：显式创建 WASM 内存底层的 MolList
+                const molList = new RDKitModule.MolList();
+                molList.append(tempMol);
+                
+                // 把原生态的 MolList 传进去运行反应
+                const output_mols = rxn.run_reactants(molList);
+                
+                molList.delete(); // 及时释放底层 C++ 列表指针内存
+                
+                if (output_mols && output_mols.size() > 0) {
+                    const nextMol = output_mols.get(0);
                     tempMol.delete();
                     tempMol = nextMol;
+                    output_mols.delete(); // 释放反应输出列表内存
                 }
             }
 
             if (tempMol) {
-                // 原生算法：获取经过反应替换后，分子的真实国际标准 InChI 去重代码
                 const realInChI = tempMol.get_inchi();
                 const realSmiles = tempMol.get_smiles();
 
@@ -309,18 +309,16 @@
                 tempMol.delete();
             }
 
-            // 防卡死异步分片调度
             if (i % chunkSize === 0 || i === totalCombos - 1) {
                 const percent = Math.round(((i + 1) / totalCombos) * 100);
                 progressBar.value = percent;
                 progressLabel.textContent = `${percent}%`;
                 
-                updateStreamingStatus(`-> Computing core matrices. Found unique entries: ${uniqueInChIs.size}`);
+                updateStreamingStatus(`-> Computing topology. Real unique structures found: ${uniqueInChIs.size}`);
                 await new Promise(resolve => setTimeout(resolve, 0));
             }
         }
 
-        // 计算完成，全真实渲染
         updateStreamingStatus(`${"-".repeat(60)}\nCalculation completed! Streaming verified payload...`);
         
         let outputBuffer = "";
