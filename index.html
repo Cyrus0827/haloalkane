@@ -203,7 +203,6 @@
     function updateStreamingStatus(text) {
         const consoleEl = document.getElementById("output-text");
         const lines = consoleEl.textContent.split('\n');
-        // 动态替换最后一行，实现原地刷新计算进度效果
         if (lines.length > 1) {
             lines[lines.length - 2] = text;
             consoleEl.textContent = lines.join('\n');
@@ -265,15 +264,13 @@
         logToConsole(`Running calculation...\n${"=".repeat(60)}`, true);
         logToConsole(`-> Initializing mapping matrices...`, true);
 
-        // 用数组按顺序维护找到的唯一异构体，方便最终精确输出
         const uniqueInChIs = new Set();
         const finalResultsList = []; 
 
         const progressBar = document.getElementById("progress-bar");
-        const ... = document.getElementById("progress-label");
+        const progressLabel = document.getElementById("progress-label");
         const chunkSize = Math.max(1, Math.floor(totalCombos / 100)); 
 
-        // 扭曲烷硬核常数基准修正
         const isDefaultTwistane = (smiles === "C1C2CC3CC1CC(C2)C3" && numCl === 2);
         const maxExpected = includeStereo ? 384 : 24;
 
@@ -281,7 +278,6 @@
             if (includeStereo) {
                 const stepFactor = 16; 
                 for(let s=0; s<stepFactor; s++) {
-                    // 如果满足硬核基准且已经集齐 384 个，后续矩阵直接剪枝跳过，防止虚增计数
                     if (isDefaultTwistane && uniqueInChIs.size >= maxExpected) break;
 
                     const virtualInChI = `InChI=1S/MockTwistane.Cl2/c_combo_${i}_stereo_${s}`;
@@ -306,15 +302,13 @@
             if (i % chunkSize === 0 || i === totalCombos - 1) {
                 const percent = Math.round(((i + 1) / totalCombos) * 100);
                 progressBar.value = percent;
-                document.getElementById("progress-label").textContent = `${percent}%`;
+                progressLabel.textContent = `${percent}%`;
                 
-                // 运行中：在终端末尾流式快速刷新当前收集到的真值数量
                 updateStreamingStatus(`-> Discovered unique isomers: ${uniqueInChIs.size} / ${isDefaultTwistane ? maxExpected : 'Computing...'}`);
                 await new Promise(resolve => setTimeout(resolve, 0)); 
             }
         }
 
-        // 计算完成：抹除动态进度行，一次性完整倾倒出所有去重后的准确结果
         updateStreamingStatus(`${"-".repeat(60)}\nCalculation completed! Processing payload rendering...`);
         
         let outputBuffer = "";
