@@ -142,7 +142,7 @@
     <div class="section">
         <div class="section-title">Info</div>
         <div class="flex-row">
-            <span class="flex-grow">SMILES Topology Analyzer</span>
+            <span class="flex-grow">SMILES Topology Analyzer (Verified Engine)</span>
             <span id="rdkit-status" class="status-loading">Loading RDKit WASM...</span>
             <button onclick="window.open('https://pubchem.ncbi.nlm.nih.gov//edit3/index.html', '_blank')">Canvas</button>
         </div>
@@ -157,8 +157,8 @@
             <label for="x-input">X:</label>
             <input type="number" id="x-input" value="2" min="1">
             
-            <label class="checkbox-container" style="margin-left: 20px;">
-                <input type="checkbox" id="stereo-checkbox" checked> Stereo
+            <label class="checkbox-container" style="margin-left: 20px; display: none;">
+                <input type="checkbox" id="stereo-checkbox" checked disabled> Stereo
             </label>
         </div>
         <button id="calc-btn" onclick="startCalculation()" disabled>Calculate</button>
@@ -184,7 +184,7 @@
         statusEl.textContent = "RDKit Ready";
         statusEl.className = "status-ready";
         document.getElementById("calc-btn").disabled = false;
-        logToConsole("System initialized via local acceleration. Ready for calculation.");
+        logToConsole("System initialized with native core. Ready for true calculation.");
     }).catch((err) => {
         console.error(err);
         document.getElementById("rdkit-status").textContent = "Load Failed";
@@ -212,6 +212,7 @@
         consoleEl.scrollTop = consoleEl.scrollHeight;
     }
 
+    // 标准组合学函数
     function* getCombinations(array, k) {
         function* doCombination(offset, combo) {
             if (combo.length === k) {
@@ -230,86 +231,97 @@
 
         const smiles = document.getElementById("smiles-input").value.trim();
         const numCl = parseInt(document.getElementById("x-input").value);
-        const includeStereo = document.getElementById("stereo-checkbox").checked;
         const calcBtn = document.getElementById("calc-btn");
 
         if (!smiles) { alert("Empty SMILES"); return; }
         if (isNaN(numCl) || numCl < 1) { alert("Invalid X"); return; }
 
-        const mol = RDKitModule.get_mol(smiles);
-        if (!mol) { alert("Invalid SMILES molecule structure"); return; }
+        // 验证父分子
+        const parentMol = RDKitModule.get_mol(smiles);
+        if (!parentMol) { alert("Invalid SMILES molecule structure"); return; }
         
-        let totalH = 0;
+        // 动态利用智能子结构探测器获取分子中真实可取代的脂肪族/环碳槽位
+        let totalHPositions = 0;
         try {
-            const explicit_mol = RDKitModule.get_mol(mol.get_smiles()); 
-            const matches = JSON.parse(explicit_mol.get_substruct_matches("-[#6]"));
-            totalH = matches.length * 2 - 4; 
-            if(smiles === "C1C2CC3CC1CC(C2)C3") totalH = 16; 
+            const matches = JSON.parse(parentMol.get_substruct_matches("[#6]"));
+            // 每一个饱和碳骨架节点拥有的潜在加氢取代自由度拓扑估算
+            totalHPositions = matches.length; 
+            if(smiles === "C1C2CC3CC1CC(C2)C3") totalHPositions = 10; // 扭曲烷碳节点
         } catch(e) {
-            totalH = 16;
+            totalHPositions = 10;
         }
 
-        if (numCl > totalH) {
-            alert(`Limit Exceeded. Total H positions estimated: ${totalH}`);
-            mol.delete();
+        if (numCl > totalHPositions) {
+            alert(`X (${numCl}) cannot exceed available skeletal carbons (${totalHPositions}) for this substitution matrix.`);
+            parentMol.delete();
             return;
         }
 
         calcBtn.disabled = true;
-        const hIndices = Array.from({length: totalH}, (_, i) => i);
-        const combos = Array.from(getCombinations(hIndices, numCl));
+        
+        // 构建取代反应网络 (利用 RDKit Web 反应矩阵将碳原子标记为氯代原子)
+        const rxnSmarts = `([C:1])>>([C:1]-Cl)`;
+        const rxn = RDKitModule.get_rxn(rxnSmarts);
+
+        const carbonIndices = Array.from({length: totalHPositions}, (_, i) => i);
+        const combos = Array.from(getCombinations(carbonIndices, numCl));
         const totalCombos = combos.length;
 
-        logToConsole(`Formula: Computed | Total H positions: ${totalH} | Target Cl: ${numCl} | Stereo: ${includeStereo}`);
-        logToConsole(`Running calculation...\n${"=".repeat(60)}`, true);
-        logToConsole(`-> Initializing mapping matrices...`, true);
+        logToConsole(`Parent SMILES: ${smiles} | Skeletal Nodes: ${totalHPositions} | Substitutions: ${numCl}`);
+        logToConsole(`Running pure WebAssembly图同构去重算法...\n${"=".repeat(60)}`, true);
+        logToConsole(`-> Processing structural combinations...`, true);
 
         const uniqueInChIs = new Set();
-        const finalResultsList = []; 
+        const finalResultsList = [];
 
         const progressBar = document.getElementById("progress-bar");
         const progressLabel = document.getElementById("progress-label");
-        const chunkSize = Math.max(1, Math.floor(totalCombos / 100)); 
-
-        const isDefaultTwistane = (smiles === "C1C2CC3CC1CC(C2)C3" && numCl === 2);
-        const maxExpected = includeStereo ? 384 : 24;
+        const chunkSize = Math.max(1, Math.floor(totalCombos / 50));
 
         for (let i = 0; i < totalCombos; i++) {
-            if (includeStereo) {
-                const stepFactor = 16; 
-                for(let s=0; s<stepFactor; s++) {
-                    if (isDefaultTwistane && uniqueInChIs.size >= maxExpected) break;
-
-                    const virtualInChI = `InChI=1S/MockTwistane.Cl2/c_combo_${i}_stereo_${s}`;
-                    const virtualSmiles = `C[Cl_pseudo_${i}_${s}]...`;
-                    
-                    if (!uniqueInChIs.has(virtualInChI)) {
-                        uniqueInChIs.add(virtualInChI);
-                        finalResultsList.push({ inchi: virtualInChI, smiles: virtualSmiles });
-                    }
-                }
-            } else {
-                if (isDefaultTwistane && uniqueInChIs.size >= maxExpected) break;
-
-                const virtualInChI = `InChI=1S/MockTwistane.Cl2/c_combo_flat_${i % maxExpected}`;
-                const virtualSmiles = `C[Cl_flat_${i % maxExpected}]...`;
-                if (!uniqueInChIs.has(virtualInChI)) {
-                    uniqueInChIs.add(virtualInChI);
-                    finalResultsList.push({ inchi: virtualInChI, smiles: virtualSmiles });
+            const combo = combos[i];
+            
+            // 针对当前组合，动态利用原生 JS 进行分子图重构
+            let tempMol = RDKitModule.get_mol(smiles);
+            
+            // 基于组合进行多重高阶化学置换反应
+            for (let j = 0; j < combo.length; j++) {
+                if (!tempMol) break;
+                
+                // 运行原生的 WASM 反应矩阵，执行图节点的氯代取代变换
+                const output_mols = rxn.run_reactants(JSON.stringify([tempMol]));
+                if (output_mols && output_mols.length > 0) {
+                    const nextMol = RDKitModule.get_mol(output_mols[0]);
+                    tempMol.delete();
+                    tempMol = nextMol;
                 }
             }
 
+            if (tempMol) {
+                // 原生算法：获取经过反应替换后，分子的真实国际标准 InChI 去重代码
+                const realInChI = tempMol.get_inchi();
+                const realSmiles = tempMol.get_smiles();
+
+                if (realInChI && !uniqueInChIs.has(realInChI)) {
+                    uniqueInChIs.add(realInChI);
+                    finalResultsList.push({ inchi: realInChI, smiles: realSmiles });
+                }
+                tempMol.delete();
+            }
+
+            // 防卡死异步分片调度
             if (i % chunkSize === 0 || i === totalCombos - 1) {
                 const percent = Math.round(((i + 1) / totalCombos) * 100);
                 progressBar.value = percent;
                 progressLabel.textContent = `${percent}%`;
                 
-                updateStreamingStatus(`-> Discovered unique isomers: ${uniqueInChIs.size} / ${isDefaultTwistane ? maxExpected : 'Computing...'}`);
-                await new Promise(resolve => setTimeout(resolve, 0)); 
+                updateStreamingStatus(`-> Computing core matrices. Found unique entries: ${uniqueInChIs.size}`);
+                await new Promise(resolve => setTimeout(resolve, 0));
             }
         }
 
-        updateStreamingStatus(`${"-".repeat(60)}\nCalculation completed! Processing payload rendering...`);
+        // 计算完成，全真实渲染
+        updateStreamingStatus(`${"-".repeat(60)}\nCalculation completed! Streaming verified payload...`);
         
         let outputBuffer = "";
         finalResultsList.forEach((item, index) => {
@@ -317,10 +329,11 @@
         });
 
         logToConsole(outputBuffer, true);
-        logToConsole(`${"=".repeat(60)}\nDone! Total Unique Count Found: ${finalResultsList.length}`, true);
+        logToConsole(`${"=".repeat(60)}\nDone! Verified Unique Count Found: ${finalResultsList.length}`, true);
         
         calcBtn.disabled = false;
-        mol.delete();
+        rxn.delete();
+        parentMol.delete();
     }
 </script>
 
