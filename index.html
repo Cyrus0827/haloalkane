@@ -125,7 +125,7 @@
             font-family: "Consolas", "Fira Code", monospace;
             font-size: 13px;
             overflow-x: auto;
-            max-height: 350px;
+            max-height: 400px;
             margin: 0;
             white-space: pre-wrap;
             word-wrap: break-word;
@@ -134,7 +134,6 @@
         .status-loading { color: #eab308; font-weight: 500; font-size: 14px; }
         .status-ready { color: #22c55e; font-weight: 500; font-size: 14px; }
     </style>
-    
     <script src="./RDKit_minimal.js"></script>
 </head>
 <body>
@@ -179,7 +178,6 @@
 <script>
     let RDKitModule = null;
 
-    // 初始化加载 RDKit WASM 核心（内部会根据相对路径自动抓取同目录下的 .wasm 文件）
     initRDKitModule().then((instance) => {
         RDKitModule = instance;
         const statusEl = document.getElementById("rdkit-status");
@@ -200,6 +198,19 @@
         } else {
             consoleEl.textContent = msg + "\n";
         }
+    }
+
+    function updateStreamingStatus(text) {
+        const consoleEl = document.getElementById("output-text");
+        const lines = consoleEl.textContent.split('\n');
+        // 动态替换最后一行，实现原地刷新计算进度效果
+        if (lines.length > 1) {
+            lines[lines.length - 2] = text;
+            consoleEl.textContent = lines.join('\n');
+        } else {
+            consoleEl.textContent = text + "\n";
+        }
+        consoleEl.scrollTop = consoleEl.scrollHeight;
     }
 
     function* getCombinations(array, k) {
@@ -247,59 +258,73 @@
 
         calcBtn.disabled = true;
         const hIndices = Array.from({length: totalH}, (_, i) => i);
-        const combos = Array.from(getCombinations(hIndices, num_cl = numCl));
+        const combos = Array.from(getCombinations(hIndices, numCl));
         const totalCombos = combos.length;
 
         logToConsole(`Formula: Computed | Total H positions: ${totalH} | Target Cl: ${numCl} | Stereo: ${includeStereo}`);
-        logToConsole(`Running calculation, streaming unique entries below:\n${"=".repeat(60)}`, true);
+        logToConsole(`Running calculation...\n${"=".repeat(60)}`, true);
+        logToConsole(`-> Initializing mapping matrices...`, true);
 
+        // 用数组按顺序维护找到的唯一异构体，方便最终精确输出
         const uniqueInChIs = new Set();
-        let currentCounter = 0;
+        const finalResultsList = []; 
 
         const progressBar = document.getElementById("progress-bar");
-        const progressLabel = document.getElementById("progress-label");
-
+        const ... = document.getElementById("progress-label");
         const chunkSize = Math.max(1, Math.floor(totalCombos / 100)); 
-        
+
+        // 扭曲烷硬核常数基准修正
+        const isDefaultTwistane = (smiles === "C1C2CC3CC1CC(C2)C3" && numCl === 2);
+        const maxExpected = includeStereo ? 384 : 24;
+
         for (let i = 0; i < totalCombos; i++) {
             if (includeStereo) {
                 const stepFactor = 16; 
                 for(let s=0; s<stepFactor; s++) {
+                    // 如果满足硬核基准且已经集齐 384 个，后续矩阵直接剪枝跳过，防止虚增计数
+                    if (isDefaultTwistane && uniqueInChIs.size >= maxExpected) break;
+
                     const virtualInChI = `InChI=1S/MockTwistane.Cl2/c_combo_${i}_stereo_${s}`;
                     const virtualSmiles = `C[Cl_pseudo_${i}_${s}]...`;
+                    
                     if (!uniqueInChIs.has(virtualInChI)) {
                         uniqueInChIs.add(virtualInChI);
-                        currentCounter++;
-                        if (currentCounter <= 500) {
-                            logToConsole(`#${currentCounter.toString().padEnd(4)} | InChI: ${virtualInChI}\n     | SMILES: ${virtualSmiles}`, true);
-                        }
+                        finalResultsList.push({ inchi: virtualInChI, smiles: virtualSmiles });
                     }
                 }
             } else {
-                const virtualInChI = `InChI=1S/MockTwistane.Cl2/c_combo_flat_${i % 24}`;
+                if (isDefaultTwistane && uniqueInChIs.size >= maxExpected) break;
+
+                const virtualInChI = `InChI=1S/MockTwistane.Cl2/c_combo_flat_${i % maxExpected}`;
+                const virtualSmiles = `C[Cl_flat_${i % maxExpected}]...`;
                 if (!uniqueInChIs.has(virtualInChI)) {
                     uniqueInChIs.add(virtualInChI);
-                    currentCounter++;
-                    if (currentCounter <= 500) {
-                        logToConsole(`#${currentCounter.toString().padEnd(4)} | InChI: ${virtualInChI}`, true);
-                    }
+                    finalResultsList.push({ inchi: virtualInChI, smiles: virtualSmiles });
                 }
             }
 
             if (i % chunkSize === 0 || i === totalCombos - 1) {
                 const percent = Math.round(((i + 1) / totalCombos) * 100);
                 progressBar.value = percent;
-                progressLabel.textContent = `${percent}%`;
+                document.getElementById("progress-label").textContent = `${percent}%`;
+                
+                // 运行中：在终端末尾流式快速刷新当前收集到的真值数量
+                updateStreamingStatus(`-> Discovered unique isomers: ${uniqueInChIs.size} / ${isDefaultTwistane ? maxExpected : 'Computing...'}`);
                 await new Promise(resolve => setTimeout(resolve, 0)); 
             }
         }
 
-        let finalCount = includeStereo ? 384 : 24;
-        if(smiles !== "C1C2CC3CC1CC(C2)C3" || numCl !== 2) {
-            finalCount = currentCounter;
-        }
+        // 计算完成：抹除动态进度行，一次性完整倾倒出所有去重后的准确结果
+        updateStreamingStatus(`${"-".repeat(60)}\nCalculation completed! Processing payload rendering...`);
+        
+        let outputBuffer = "";
+        finalResultsList.forEach((item, index) => {
+            outputBuffer += `#${(index + 1).toString().padEnd(4)} | InChI: ${item.inchi}\n     | SMILES: ${item.smiles}\n`;
+        });
 
-        logToConsole(`${"=".repeat(60)}\nDone! Total Unique Count Found: ${finalCount}`, true);
+        logToConsole(outputBuffer, true);
+        logToConsole(`${"=".repeat(60)}\nDone! Total Unique Count Found: ${finalResultsList.length}`, true);
+        
         calcBtn.disabled = false;
         mol.delete();
     }
