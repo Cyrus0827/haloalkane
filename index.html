@@ -1045,10 +1045,10 @@
         mol.delete();
 
         // Get canonical ordering
-        const canonMol = RDKitModule.get_mol(baseSMILES);
-        if (!canonMol) return null;
-        const canonical = canonMol.get_canonical_smiles();
-        canonMol.delete();
+        const molCopy = RDKitModule.get_mol(baseSMILES);
+        if (!molCopy) return null;
+        const canonical = molCopy.get_canonical_smiles();
+        molCopy.delete();
 
         // Map substIdxs to canonical positions
         // Since substIdxs come from get_substruct_matches("[#6]"), they are already in canonical order
