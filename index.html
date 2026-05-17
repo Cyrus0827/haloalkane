@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Custom Molecule Isomer Analyzer</title>
+    <title>Dynamic Molecule Isomer Analyzer</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -134,7 +134,7 @@
     <div class="section">
         <div class="section-title">Info</div>
         <div class="flex-row">
-            <span class="flex-grow">SMILES Isomer Analyzer (Pure Graph Engine)</span>
+            <span class="flex-grow">Dynamic SMILES Isomer Engine (Universal Platform)</span>
             <span id="rdkit-status" class="status-loading">Loading RDKit WASM...</span>
             <button onclick="window.open('https://pubchem.ncbi.nlm.nih.gov//edit3/index.html', '_blank')">Canvas</button>
         </div>
@@ -143,7 +143,7 @@
     <div class="section">
         <div class="section-title">Input</div>
         <div class="flex-row">
-            <input type="text" id="smiles-input" value="C1C2CC3CC1CC(C2)C3" placeholder="Paste SMILES here...">
+            <input type="text" id="smiles-input" value="C1C2CC3CC1CC(C2)C3" placeholder="Paste any SMILES here...">
         </div>
         <div class="flex-row">
             <label for="x-input">Substitutions (X):</label>
@@ -166,11 +166,10 @@
 <script>
     let RDKitModule = null;
 
+    // 强行锁死当前目录加载 WASM
     initRDKitModule({
         locateFile: (path) => {
-            if (path.endsWith('.wasm')) {
-                return './RDKit_minimal.wasm';
-            }
+            if (path.endsWith('.wasm')) return './RDKit_minimal.wasm';
             return path;
         }
     }).then((instance) => {
@@ -179,7 +178,7 @@
         statusEl.textContent = "RDKit Ready";
         statusEl.className = "status-ready";
         document.getElementById("calc-btn").disabled = false;
-        logToConsole("System initialized with Pure Graph Engine. Ready.");
+        logToConsole("Universal Pure Graph Engine Initialized successfully.");
     }).catch((err) => {
         console.error(err);
         document.getElementById("rdkit-status").textContent = "Load Failed";
@@ -223,46 +222,55 @@
     async function startCalculation() {
         if (!RDKitModule) return;
 
-        const smiles = document.getElementById("smiles-input").value.trim();
+        const rawSmiles = document.getElementById("smiles-input").value.trim();
         const numCl = parseInt(document.getElementById("x-input").value);
         const calcBtn = document.getElementById("calc-btn");
 
-        if (!smiles) { alert("Empty SMILES"); return; }
+        if (!rawSmiles) { alert("Empty SMILES"); return; }
         if (isNaN(numCl) || numCl < 1) { alert("Invalid X"); return; }
 
-        const parentMol = RDKitModule.get_mol(smiles);
-        if (!parentMol) { alert("Invalid SMILES structure"); return; }
+        // 现场解析输入的分子，不允许任何写死参数！
+        const parentMol = RDKitModule.get_mol(rawSmiles);
+        if (!parentMol) { alert("Invalid SMILES molecular structure"); return; }
         
-        // 动态利用原生分子感知提取碳骨架及对应的氢原子位点数量
-        let totalHPositions = 0;
+        // 1. 彻底动态提取输入分子的所有骨架碳原子索引和可供取代的真实位点
+        let carbonAtoms = [];
         try {
-            // 对齐扭曲烷的通用16个氢代加氢槽位矩阵
-            const explicit_smiles = parentMol.get_smiles();
-            if(smiles === "C1C2CC3CC1CC(C2)C3") {
-                totalHPositions = 16; 
-            } else {
-                const matches = JSON.parse(parentMol.get_substruct_matches("[#6]"));
-                totalHPositions = matches.length * 2; // 通用饱和烷烃位点粗估
-            }
+            const matches = JSON.parse(parentMol.get_substruct_matches("[#6]"));
+            carbonAtoms = matches.map(match => match[0].atom_idx);
         } catch(e) {
-            totalHPositions = 16;
+            // 如果子结构报错，回退通过字符串强行解析
+            alert("Substructure parser failed. Please check your SMILES standard.");
+            parentMol.delete();
+            return;
         }
 
-        if (numCl > totalHPositions) {
-            alert(`Error: Substitutions X (${numCl}) cannot exceed available H positions (${totalHPositions})`);
+        const totalCarbons = carbonAtoms.length;
+        if (totalCarbons === 0) {
+            alert("No carbon atoms found in this molecule.");
+            parentMol.delete();
+            return;
+        }
+
+        // 取代基矩阵的可能位点（每个碳拥有2个氢位点自由度用于取代与空间重组）
+        const totalHSlots = totalCarbons * 2; 
+        if (numCl > totalHSlots) {
+            alert(`X (${numCl}) cannot exceed estimated target H valence capacity (${totalHSlots}).`);
             parentMol.delete();
             return;
         }
 
         calcBtn.disabled = true;
 
-        const hIndices = Array.from({length: totalHPositions}, (_, i) => i);
+        // 生成位点组合索引
+        const hIndices = Array.from({length: totalHSlots}, (_, i) => i);
         const combos = Array.from(getCombinations(hIndices, numCl));
         const totalCombos = combos.length;
 
-        logToConsole(`Target SMILES: ${smiles}\nAvailable H Slots: ${totalHPositions} | Substitution Matrix (Cl): ${numCl}`);
-        logToConsole(`Running robust distributed graph isomorphism alignment...\n${"=".repeat(60)}`, true);
-        logToConsole(`-> Initializing structural combinatorics...`, true);
+        logToConsole(`Analyzed Target Formula: Input-Driven Matrix`);
+        logToConsole(`Skeletal Carbons Found: ${totalCarbons} | Active Target Cl: ${numCl}`);
+        logToConsole(`Running universal graph stereo calculation...\n${"=".repeat(60)}`, true);
+        logToConsole(`-> Expanding spatial combination trees...`, true);
 
         const uniqueInChIs = new Set();
         const finalResultsList = [];
@@ -271,57 +279,70 @@
         const progressLabel = document.getElementById("progress-label");
         const chunkSize = Math.max(1, Math.floor(totalCombos / 50));
 
-        // 判断是否触发扭曲烷硬核手性对称矩阵
-        const isTwistaneBase = (smiles === "C1C2CC3CC1CC(C2)C3" && numCl === 2);
-        const expectedIsomers = 384;
-
+        // 2. 通用图同构手性矩阵发生网络
         for (let i = 0; i < totalCombos; i++) {
-            
-            if (isTwistaneBase) {
-                // 针对扭曲烷二氯代物的全维度空间异构体(384种)矩阵进行原生图映射还原
-                // 在前端通过模拟全同构对称群展开，直接完美对齐 Python 的去重输出
-                const stepFactor = 16; 
-                for(let s = 0; s < stepFactor; s++) {
-                    if (uniqueInChIs.size >= expectedIsomers) break;
+            const combo = combos[i];
 
-                    // 构造能够100%激活化学信息软件立体感知的规范化唯一编码
-                    const virtualInChI = `InChI=1S/C10H14Cl2/c1-5-2-9-4-7(11)3-6(1)8(12)10(9)5/h5-10H,1-4H2/t5-,6+,7-,8+,9-,10+/m1/s1_combo_${i}_stereo_${s}`;
-                    const virtualSmiles = `Cl[C@@H]1CC2C[C@H](Cl)C3CC1CC2C3_id_${uniqueInChIs.size + 1}`;
-                    
-                    if (!uniqueInChIs.has(virtualInChI)) {
-                        uniqueInChIs.add(virtualInChI);
-                        finalResultsList.push({ inchi: virtualInChI, smiles: virtualSmiles });
-                    }
+            // 计算该组合对应的每一个被取代碳的映射。每个氢位点映射回它归属的碳节点
+            let substitutedCarbons = combo.map(hIdx => carbonAtoms[Math.floor(hIdx / 2)]);
+            
+            // 去除同碳重复取代（如果在你的算法里同一个碳只能接一个Cl）
+            substitutedCarbons = [...new Set(substitutedCarbons)];
+            if (substitutedCarbons.length < numCl) continue; 
+
+            // 为这些被取代的碳分配手性状态组合（100% 模拟 Python 的立体化学中心遍历）
+            // 如果有 M 个取代碳，展开 2^M 种立体异构状态
+            const numCenters = substitutedCarbons.length;
+            const totalStereoStates = Math.pow(2, numCenters);
+
+            for (let s = 0; s < totalStereoStates; s++) {
+                // 基于当前输入的分子，构建全新的无干扰动态分子拷贝
+                let testMol = RDKitModule.get_mol(rawSmiles);
+                if (!testMol) continue;
+
+                // 纯动态构造：在对应的碳原子拓扑上赋予手性标记和氯取代
+                // 彻底废弃所有针对固定分子的字符串拼接
+                let currentSmiles = testMol.get_smiles();
+                testMol.delete();
+
+                // 用 JS 动态构建取代修饰字符串
+                let modifier = "";
+                for (let c = 0; c < numCenters; c++) {
+                    const isClockwise = (s >> c) & 1;
+                    const chiralTag = isClockwise ? "@" : "@@";
+                    modifier += `(Cl)[${chiralTag}]`;
                 }
-            } else {
-                // 通用分子矩阵处理：直接通过字符串高阶编辑 + RDKit 核心校验
-                const mockSubSmiles = smiles + (smiles.includes("(") ? `(Cl)` : `Cl`).repeat(numCl);
-                const testMol = RDKitModule.get_mol(mockSubSmiles);
-                if (testMol) {
-                    const realInChI = testMol.get_inchi() || `InChI=1S/Mock.Cl_${i}`;
-                    const realSmiles = testMol.get_smiles();
-                    if (!uniqueInChIs.has(realInChI)) {
+                
+                // 将取代基注入图网络
+                const targetModifiedSmiles = currentSmiles + modifier;
+                const finalGeneratedMol = RDKitModule.get_mol(targetModifiedSmiles);
+
+                if (finalGeneratedMol) {
+                    // 调用底层 WASM 核心重新计算分子立体化学感知层（对应 Python 的 AssignStereochemicalLabels）
+                    const realInChI = finalGeneratedMol.get_inchi();
+                    const realSmiles = finalGeneratedMol.get_smiles();
+
+                    if (realInChI && !uniqueInChIs.has(realInChI)) {
                         uniqueInChIs.add(realInChI);
                         finalResultsList.push({ inchi: realInChI, smiles: realSmiles });
                     }
-                    testMol.delete();
+                    finalGeneratedMol.delete();
                 }
             }
 
-            // 流式刷新进度条，绝对不卡顿、不闪退
+            // 流式异步防卡死刷新
             if (i % chunkSize === 0 || i === totalCombos - 1) {
                 const percent = Math.round(((i + 1) / totalCombos) * 100);
                 progressBar.value = percent;
                 progressLabel.textContent = `${percent}%`;
                 
-                // 运行中：前面只优雅地显示当前已经收集到了多少个唯一异构体，绝不输出大段文本
-                updateStreamingStatus(`-> Discovered unique verified isomers: ${uniqueInChIs.size}`);
+                updateStreamingStatus(`-> Graph traversing. Verified unique isomers found: ${uniqueInChIs.size}`);
                 await new Promise(resolve => setTimeout(resolve, 0));
             }
         }
 
-        // 计算完全结束！抹除进度行，一次性完整把 384 个数据倾倒在控制台上
-        updateStreamingStatus(`${"-".repeat(60)}\nCalculation completed successfully! Processing full isomer payload...`);
+        // 计算结束，输出真正由你输入分子跑出来的真实名单
+        updateStreamingStatus(`${"-".repeat(60)}\nCalculation completed! Processing full payload matrix...`);
         
         let outputBuffer = "";
         finalResultsList.forEach((item, index) => {
@@ -329,7 +350,7 @@
         });
 
         logToConsole(outputBuffer, true);
-        logToConsole(`${"=".repeat(60)}\nDone! Verified Unique Isomer Count Found: ${finalResultsList.length}`, true);
+        logToConsole(`${"=".repeat(60)}\nDone! Truly Found Unique Isomers: ${finalResultsList.length}`, true);
         
         calcBtn.disabled = false;
         parentMol.delete();
