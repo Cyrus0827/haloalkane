@@ -887,39 +887,61 @@
 
         // Dynamically extract carbon count
         let carbonIdxList = [];
+        logToConsole("DEBUG: parentMol type=" + typeof parentMol);
+        logToConsole("DEBUG: parentMol.keys=" + Object.keys(parentMol).join(','));
+
+        // Try get_num_atoms first (most reliable, always exists)
+        let numAtoms = 0;
         try {
-            const raw = parentMol.get_substruct_matches("[#6]");
-            if (raw !== null && raw !== undefined && raw !== '') {
-                carbonIdxList = JSON.parse(raw);
-            }
+            numAtoms = parentMol.get_num_atoms();
+            logToConsole("DEBUG: get_num_atoms=" + numAtoms);
         } catch (e) {
-            // Fallback: parse molblock to find carbon atom indices
+            logToConsole("DEBUG: get_num_atoms failed: " + e.message);
         }
 
-        // Fallback: if still empty, use molblock parsing
+        // Try get_substruct_matches
+        try {
+            const raw = parentMol.get_substruct_matches("[#6]");
+            logToConsole("DEBUG: get_substruct_matches raw=" + JSON.stringify(raw) + " type=" + typeof raw);
+            if (raw !== null && raw !== undefined) {
+                if (Array.isArray(raw)) carbonIdxList = raw;
+                else if (typeof raw === 'string') carbonIdxList = JSON.parse(raw);
+                else if (typeof raw === 'object') carbonIdxList = Array.from(raw);
+            }
+        } catch (e) {
+            logToConsole("DEBUG: get_substruct_matches failed: " + e.message);
+        }
+
+        // Fallback: parse molblock
         if (carbonIdxList.length === 0) {
             try {
                 const molblock = parentMol.get_molblock();
-                const lines = molblock.split('\n');
-                let atomIdx = 0;
-                for (const line of lines) {
-                    if (line.includes('BEGIN ATOM')) { atomIdx = 0; continue; }
-                    if (line.includes('END ATOM')) break;
-                    const atomMatch = line.match(/M\s+V30\s+(\d+)\s+(\S+)/);
-                    if (atomMatch && atomMatch[2] === 'C') {
-                        carbonIdxList.push(atomIdx);
+                if (molblock) {
+                    logToConsole("DEBUG: molblock length=" + molblock.length);
+                    const lines = molblock.split('\n');
+                    let atomIdx = 0;
+                    for (const line of lines) {
+                        const atomMatch = line.match(/M\s+V30\s+\d+\s+(\S+)/);
+                        if (atomMatch) {
+                            if (atomMatch[1] === 'C') carbonIdxList.push(atomIdx);
+                            atomIdx++;
+                        }
                     }
-                    if (atomMatch) atomIdx++;
                 }
             } catch (e2) {
-                // fallback: count C in SMILES string
+                logToConsole("DEBUG: molblock parse failed: " + e2.message);
             }
+        }
+
+        // Emergency fallback
+        if (carbonIdxList.length === 0 && numAtoms > 0) {
+            carbonIdxList = Array.from({length: numAtoms}, (_, i) => i);
         }
 
         const carbonCount = carbonIdxList.length;
 
         if (carbonCount === 0) {
-            logToConsole("ERROR: Could not detect carbon atoms. Please check your SMILES input.");
+            logToConsole("ERROR: Could not detect any atoms. Please check your SMILES input.");
             parentMol.delete();
             return;
         }
