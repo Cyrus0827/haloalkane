@@ -888,17 +888,38 @@
         // Dynamically extract carbon count
         let carbonIdxList = [];
         try {
-            const matches = JSON.parse(parentMol.get_substruct_matches("[#6]"));
-            carbonIdxList = matches;
+            const raw = parentMol.get_substruct_matches("[#6]");
+            if (raw !== null && raw !== undefined && raw !== '') {
+                carbonIdxList = JSON.parse(raw);
+            }
         } catch (e) {
-            logToConsole("Warning: Could not parse carbon matches, using fallback.");
-            carbonIdxList = [];
+            // Fallback: parse molblock to find carbon atom indices
+        }
+
+        // Fallback: if still empty, use molblock parsing
+        if (carbonIdxList.length === 0) {
+            try {
+                const molblock = parentMol.get_molblock();
+                const lines = molblock.split('\n');
+                let atomIdx = 0;
+                for (const line of lines) {
+                    if (line.includes('BEGIN ATOM')) { atomIdx = 0; continue; }
+                    if (line.includes('END ATOM')) break;
+                    const atomMatch = line.match(/M\s+V30\s+(\d+)\s+(\S+)/);
+                    if (atomMatch && atomMatch[2] === 'C') {
+                        carbonIdxList.push(atomIdx);
+                    }
+                    if (atomMatch) atomIdx++;
+                }
+            } catch (e2) {
+                // fallback: count C in SMILES string
+            }
         }
 
         const carbonCount = carbonIdxList.length;
 
         if (carbonCount === 0) {
-            alert("No carbon atoms detected.");
+            logToConsole("ERROR: Could not detect carbon atoms. Please check your SMILES input.");
             parentMol.delete();
             return;
         }
